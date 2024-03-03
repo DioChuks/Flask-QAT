@@ -1,5 +1,6 @@
 .vscode
+.env
 __pycache__
-flask-env/*
-database/*
-research/uploads/*
+/flask-env/*
+/database/*.sqlite
+/research/uploads/*.txt
