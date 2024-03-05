@@ -1,9 +1,11 @@
 import os
+import json
 from openai import OpenAI
 from dotenv import load_dotenv
 from uuid import uuid4
 from typing import Optional
 from contextlib import contextmanager
+from transformers import pipeline
 from werkzeug.utils import secure_filename
 from flask import Flask, request, jsonify, render_template
 from sqlalchemy import create_engine, Column, String, Text, inspect
@@ -38,6 +40,21 @@ class Research(Base):
             'file_name': self.file_name,
             'summary': self.summary,
         }
+
+class Feedback(Base):
+    __tablename__ = 'feedbacks_tbl'
+    id: str = Column(String, primary_key=True)
+    question_asked: str = Column(String)
+    answer: Optional[str] = Column(Text)
+    bullet_points: Optional[str] = Column(String)
+    test_question: str = Column(String)
+    
+    def __init__(self, question_asked, answer, bullet_points, test_question):
+        self.question_asked = question_asked
+        self.answer = answer
+        self.bullet_points = json.dumps(bullet_points)
+        self.test_question = test_question
+    
 
 engine = create_engine('sqlite:///database/database.sqlite')  # Replace with your DB connection string
 Base.metadata.create_all(engine)
@@ -84,6 +101,38 @@ def get_all_research():
 
         return research_list
 
+def get_all_feedback():
+    with get_db() as db:
+        # Get all feedback objects from the table
+        feedback_data = db.query(Feedback).all()
+        # Convert feedback objects to a list of dictionaries
+        feedback_list = []
+        for feedback in feedback_data:
+            # Customize the data to include relevant fields from Feedback object
+            feedback_dict = {
+                'id': feedback.id,
+                'question_asked': feedback.question_asked,
+                'answer': feedback.answer,
+                'bullet_points': feedback.bullet_points,
+                'test_question': feedback.test_question,
+            }
+            feedback_list.append(feedback_dict)
+        
+        return feedback_list
+
+def save_feedback_to_txt(feedback_data):
+  """
+  Saves the feedback response to a text file named "feedback.txt".
+
+  Args:
+      feedback_data (dict): The dictionary containing the feedback response information.
+  """
+  with open("research/feedback.txt", "w") as f:
+    f.write(json.dumps(feedback_data))
+
+  print("Feedback saved to feedback.txt")
+
+
 @app.route('/research/<id>')
 def view_research(id):
     with get_db() as db:
@@ -98,6 +147,13 @@ def list_research():
     if research_data is None:
         return jsonify({'status': 'No research data found'}), 404
     return jsonify(research_data)
+
+@app.route('/feedback')
+def list_feedback():
+    feedback_data = get_all_feedback()
+    if feedback_data is None:
+        return jsonify({'status': 'No feedback data found'}), 404
+    return jsonify(feedback_data)
 
 @app.route('/publish-doc', methods=['GET'])
 def view_publish_doc():
@@ -158,6 +214,89 @@ def upload_file():
         return jsonify({'message': 'File uploaded and summarized successfully', 'data': {'document_id': doc_id}}), 201
     else:
         return jsonify({'error': 'Unsupported file format'}), 400
+
+@app.route('/query', methods = ['POST'])
+def query():
+
+    data = request.get_json()
+    if not validate_request(data):
+        return jsonify({'error': 'Missing required document or question'}), 400
+
+    document_id = data['document_id']
+    question = data['question']
+
+    research_doc = get_research(document_id)
+    if not research_doc:
+        return jsonify({'error': f'No research found for {document_id}'}), 404
+
+    try:
+        response = ask_openai(research_doc, question)
+        feedback = response.choices[0].message.content
+        
+        save_feedback_to_txt(feedback)
+        
+        with open(os.path.join('research/', 'feedback.txt'), 'r') as f:
+            lines = f.readlines()
+            answer = lines[0].strip()
+            bullet_points ='\n'.join(lines[1:])
+            question = '\n'.join(lines[2:])
+            
+        print(answer)
+        print(bullet_points)
+        print(question)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    return jsonify({
+        'message': 'Question submitted successfully',
+        'feedback': feedback
+    })
+
+def read_feedback_file():
+    with open(os.path.join('research/', 'feedback.txt'), 'r') as f:
+        lines = f.readlines()
+        answer = lines[0].strip()
+        bullet_points ='\n'.join(lines[1:])
+        question = '\n'.join(lines[2:])
+            
+    print(answer)
+    print("answer above")
+    print(bullet_points)
+    print("bullet points above")
+    print(question)
+    print("question above")
+
+def validate_request(data):
+    return data and data.get('document_id') and data.get('question')
+
+def get_research(document_id):
+    with get_db() as db:
+        return db.query(Research).filter(Research.id == document_id).first()
+
+def ask_openai(research_doc, question):
+    # call OpenAI API
+    return client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": f"You: {question} in this document, also when returning the response it is highly important for it to be in a valid json syntax `the answer to the question asked, A list of bullet points emphasizing key details in the answer to improve understanding, A generated question to evaluate if the user understood the answer provided`"},
+                {"role": "user", "content": research_doc.abstract}
+            ],
+            max_tokens=300,
+            stop=None,
+            temperature=0.5,
+        )
+
+def save_feedback(id, question, feedback):
+    with get_db() as db:
+        db.add(Feedback(
+            id=id, 
+            question_asked=question,
+            bullet_points=feedback['key_details'],
+            test_question=feedback['question'],
+            answer=feedback['answer']
+        ))
+        db.commit()
 
 if __name__ == '__main__':
     app.run(debug=True)
