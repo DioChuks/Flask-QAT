@@ -10,7 +10,7 @@ langchain==0.0.209
 langchainplus-sdk==0.0.17
 langcodes==3.3.0
 lit==16.0.6
-llama-index==0.6.31
+llama-index==0.10.13
 Markdown==3.4.3
 MarkupSafe==2.1.2
 marshmallow==3.19.0
